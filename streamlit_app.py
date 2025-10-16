@@ -554,7 +554,10 @@ k3.metric("RSI(14)", f"{rsi_val:.1f}")
 if regime: st.caption(regime)
 
 # ================== Tabs ==================
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 Gráfico", "📚 Indicadores", "🤖 ML", "🧪 Backtest", "ℹ️ Glossário", "📊 Confiabilidade & Trades"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📈 Gráfico", "📚 Indicadores", "🤖 ML", "🧪 Backtest", "ℹ️ Glossário", "📊 Confiabilidade & Trades", "🧠 NeuralProphet"
+])
+
 
 # ---- Tab 1: Gráfico ----
 with tab1:
@@ -825,6 +828,91 @@ with tab5:
 """)
 
 with tab5:
+
+
+    # ===== v11: NeuralProphet Tab =====
+with tab7:
+    st.subheader("🧠 NeuralProphet — previsão de tendência")
+    st.caption("Modelo neural inspirado no Prophet (tendência + sazonalidades) — documentação oficial.")
+
+    # Seletor do horizonte futuro (quantos dias você quer prever)
+    np_h = st.number_input(
+        "Dias para prever (futuro)",
+        min_value=1, max_value=365, value=30, step=1,
+        help="Quantos dias à frente você quer projetar com o NeuralProphet."
+    )
+
+    if not _NP_AVAILABLE:
+        st.warning("NeuralProphet não está instalado no ambiente. Adicione `neuralprophet` ao requirements.txt e faça o deploy novamente.")
+        st.code("pip install neuralprophet", language="bash")
+    else:
+        try:
+            # Usa o mesmo DataFrame de preços já carregado no app
+            price_df = None
+            if 'df_price' in locals():
+                price_df = df_price.copy()
+            elif 'df' in locals():
+                price_df = df.copy()
+
+            if price_df is None:
+                st.info("Carregue um ticker para habilitar o NeuralProphet.")
+            else:
+                # Preparação no padrão NeuralProphet (colunas ds, y)
+                if 'Date' in price_df.columns:
+                    price_df = price_df.rename(columns={'Date':'ds'})
+                if 'Close' in price_df.columns:
+                    price_df = price_df.rename(columns={'Close':'y'})
+                if 'Adj Close' in price_df.columns and 'y' not in price_df.columns:
+                    price_df = price_df.rename(columns={'Adj Close':'y'})
+
+                np_df = price_df[['ds','y']].dropna().copy()
+
+                # Modelo (simples) — tendência linear + sazonalidade semanal/anual
+                m = NeuralProphet(
+                    yearly_seasonality=True,
+                    weekly_seasonality=True,
+                    daily_seasonality=False,
+                )
+                # Frequência de dias úteis da B3: 'B'
+                metrics = m.fit(np_df, freq='B')
+
+                # Cria datas futuras e prevê; mantém previsões históricas para contexto
+                df_future = m.make_future_dataframe(np_df, periods=int(np_h), n_historic_predictions=True)
+                forecast = m.predict(df_future)
+
+                # Gráfico: histórico (y) + previsão (yhat1)
+                import plotly.express as px
+                fig = px.line(forecast, x='ds', y='yhat1', title='Projeção (yhat1) — NeuralProphet')
+                fig.add_scatter(x=np_df['ds'], y=np_df['y'], mode='lines', name='Fechamento (histórico)')
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Tendência prevista no fim do horizonte
+                split_date = np_df['ds'].max()
+                last_close = float(np_df.iloc[-1]['y'])
+                fut_part = forecast[forecast['ds'] > split_date]
+                last_forecast = float((fut_part.tail(1)['yhat1']).values[0]) if not fut_part.empty else float(forecast.tail(1)['yhat1'].values[0])
+                pct = (last_forecast/last_close - 1.0)*100.0
+                st.metric("Tendência prevista (fim do horizonte)", "alta" if pct>=0 else "baixa", f"{pct:.2f}%")
+
+                # Componente de tendência (se disponível)
+                if 'trend' in forecast.columns:
+                    fig_t = px.line(forecast, x='ds', y='trend', title='Componente de Tendência')
+                    st.plotly_chart(fig_t, use_container_width=True)
+
+                # Download das previsões futuras
+                fut = fut_part[['ds','yhat1']].rename(columns={'ds':'Data','yhat1':'Preço previsto'})
+                if not fut.empty:
+                    st.download_button(
+                        "Baixar previsão futura (CSV)",
+                        data=fut.to_csv(index=False).encode("utf-8"),
+                        file_name="neuralprophet_forecast.csv",
+                        mime="text/csv"
+                    )
+
+                st.info("Baseado no guia rápido e na classe `NeuralProphet` da documentação oficial.")
+        except Exception as e:
+            st.error(f"Falha ao rodar o NeuralProphet: {e}")
+
     
     # ===== v10.5: Confiabilidade & Trades =====
     try:
