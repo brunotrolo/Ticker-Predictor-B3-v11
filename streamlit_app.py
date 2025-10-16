@@ -897,59 +897,121 @@ with tab6:
         csv = trades_df.to_csv(index=False).encode("utf-8")
         st.download_button("Baixar trades (CSV)", data=csv, file_name="oos_trades.csv", mime="text/csv")
 
-# ---- Tab 7: NeuralProphet
+# ---- Tab 7: NeuralProphet (histórico + futuro com cores diferentes)
 with tab7:
     st.subheader("🧠 NeuralProphet — previsão de tendência")
-    st.caption("Modelo neural inspirado no Prophet (tendência + sazonalidades).")
+    st.caption("Gera previsões em duas partes: histórico (in-sample) e futuro (out-of-sample).")
 
-    np_h = st.number_input("Dias para prever (futuro)", min_value=1, max_value=365, value=30, step=1,
-                           help="Quantos dias à frente você quer projetar com o NeuralProphet.")
+    np_h = st.number_input(
+        "Dias para prever (futuro)", min_value=1, max_value=365, value=30, step=1,
+        help="Quantos dias à frente você quer projetar."
+    )
 
     if not _NP_AVAILABLE:
-        st.warning("NeuralProphet não está instalado. Adicione `neuralprophet` ao requirements.txt e faça o deploy novamente.")
+        st.warning("NeuralProphet não está instalado. Adicione `neuralprophet` ao requirements.txt.")
         st.code("pip install neuralprophet", language="bash")
     else:
         try:
+            # 1) Prepara série (ds, y)
             price_df = df.copy()
-            # Padroniza para ds/y
-            if 'Date' in price_df.columns:
-                price_df = price_df.rename(columns={'Date':'ds'})
-            if 'Close' in price_df.columns:
-                price_df = price_df.rename(columns={'Close':'y'})
-            if 'Adj Close' in price_df.columns and 'y' not in price_df.columns:
-                price_df = price_df.rename(columns={'Adj Close':'y'})
+            if "Date" in price_df.columns:
+                price_df = price_df.rename(columns={"Date":"ds"})
+            if "Close" in price_df.columns:
+                price_df = price_df.rename(columns={"Close":"y"})
+            if "Adj Close" in price_df.columns and "y" not in price_df.columns:
+                price_df = price_df.rename(columns={"Adj Close":"y"})
 
-            np_df = price_df[['ds','y']].dropna().copy()
+            np_df = price_df[["ds","y"]].dropna().copy()
+            np_df["ds"] = pd.to_datetime(np_df["ds"])
+            last_hist_date = np_df["ds"].max()
 
-            m = NeuralProphet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
-            m.fit(np_df, freq='B')
+            # 2) Modelo (seasonalidades padrão; n_forecasts=1 para daily step)
+            m = NeuralProphet(
+                yearly_seasonality=True,
+                weekly_seasonality=True,
+                daily_seasonality=False
+            )
+            _ = m.fit(np_df, freq="B")
 
-            df_future = m.make_future_dataframe(np_df, periods=int(np_h), n_historic_predictions=True)
+            # 3) Futuro com previsões históricas habilitadas
+            df_future = m.make_future_dataframe(
+                np_df,
+                periods=int(np_h),              # dias futuros
+                n_historic_predictions=True     # inclui previsões no histórico
+            )
             forecast = m.predict(df_future)
 
-            fig = px.line(forecast, x='ds', y='yhat1', title='Projeção (yhat1) — NeuralProphet')
-            fig.add_scatter(x=np_df['ds'], y=np_df['y'], mode='lines', name='Histórico')
+            # 4) Separa histórico previsto vs futuro previsto
+            fc = forecast.copy()
+            fc["ds"] = pd.to_datetime(fc["ds"])
+            hist_pred = fc[fc["ds"] <= last_hist_date]
+            fut_pred  = fc[fc["ds"]  > last_hist_date]
+
+            # 5) Gráfico: histórico real, previsto histórico, previsto futuro (cores diferentes)
+            fig = go.Figure()
+
+            # Histórico REAL
+            fig.add_trace(go.Scatter(
+                x=np_df["ds"], y=np_df["y"],
+                mode="lines", name="Fechamento (histórico)",
+                line=dict(width=2)
+            ))
+
+            # PREVISÃO no histórico (in-sample)
+            if not hist_pred.empty:
+                fig.add_trace(go.Scatter(
+                    x=hist_pred["ds"], y=hist_pred["yhat1"],
+                    mode="lines", name="Previsão (histórico)",
+                    line=dict(width=2, dash="dot", color="#8ecae6")
+                ))
+
+            # PREVISÃO no futuro (out-of-sample)
+            if not fut_pred.empty:
+                fig.add_trace(go.Scatter(
+                    x=fut_pred["ds"], y=fut_pred["yhat1"],
+                    mode="lines", name="Previsão (futuro)",
+                    line=dict(width=3, color="#ffd166")
+                ))
+
+            # Linha vertical no corte histórico/futuro
+            fig.add_vline(x=last_hist_date, line=dict(color="#aaaaaa", width=1, dash="dash"))
+            fig.update_layout(
+                title="NeuralProphet — Histórico vs Futuro",
+                xaxis_title="Data", yaxis_title="Preço",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+            )
             st.plotly_chart(fig, use_container_width=True)
 
-            # Tendência prevista no fim do horizonte
-            split_date = np_df['ds'].max()
-            last_close = float(np_df.iloc[-1]['y'])
-            fut_part = forecast[forecast['ds'] > split_date]
-            last_forecast = float((fut_part.tail(1)['yhat1']).values[0]) if not fut_part.empty else float(forecast.tail(1)['yhat1'].values[0])
+            # 6) Métrica de tendência ao fim do horizonte
+            last_close = float(np_df.iloc[-1]["y"])
+            if not fut_pred.empty:
+                last_forecast = float(fut_pred.tail(1)["yhat1"].values[0])
+            else:
+                # Se usuário pedir 0 futuro (teoricamente não), pega último ponto previsto
+                last_forecast = float(fc.tail(1)["yhat1"].values[0])
             pct = (last_forecast/last_close - 1.0)*100.0
-            st.metric("Tendência prevista (fim do horizonte)", "alta" if pct>=0 else "baixa", f"{pct:.2f}%")
+            st.metric("Tendência prevista (fim do horizonte)",
+                      "alta" if pct >= 0 else "baixa",
+                      f"{pct:.2f}%")
 
-            # Componente de tendência (se disponível)
-            if 'trend' in forecast.columns:
-                fig_t = px.line(forecast, x='ds', y='trend', title='Componente de Tendência')
+            # 7) (Opcional) Componente de tendência
+            if "trend" in fc.columns:
+                fig_t = px.line(fc, x="ds", y="trend", title="Componente de Tendência (NeuralProphet)")
+                # destaque visual histórico vs futuro
+                fig_t.add_vline(x=last_hist_date, line=dict(color="#aaaaaa", width=1, dash="dash"))
                 st.plotly_chart(fig_t, use_container_width=True)
 
-            # Download CSV
-            fut = fut_part[['ds','yhat1']].rename(columns={'ds':'Data','yhat1':'Preço previsto'})
-            if not fut.empty:
-                st.download_button("Baixar previsão futura (CSV)", data=fut.to_csv(index=False).encode("utf-8"),
-                                   file_name="neuralprophet_forecast.csv", mime="text/csv")
+            # 8) Download CSVs – previsões separadas
+            if not hist_pred.empty:
+                csv_hist = hist_pred[["ds","yhat1"]].rename(columns={"ds":"Data","yhat1":"Prev (histórico)"}).to_csv(index=False).encode("utf-8")
+                st.download_button("Baixar previsões (histórico) CSV", data=csv_hist,
+                                   file_name="neuralprophet_previsoes_historicas.csv", mime="text/csv")
+            if not fut_pred.empty:
+                csv_fut = fut_pred[["ds","yhat1"]].rename(columns={"ds":"Data","yhat1":"Prev (futuro)"}).to_csv(index=False).encode("utf-8")
+                st.download_button("Baixar previsões (futuro) CSV", data=csv_fut,
+                                   file_name="neuralprophet_previsoes_futuras.csv", mime="text/csv")
 
-            st.info("Baseado no quickstart do NeuralProphet; ajuste horizonte e compare com os sinais do ML clássico.")
+            st.caption("Baseado na API oficial do NeuralProphet: uso de `make_future_dataframe(..., n_historic_predictions=True, periods=H)` e `predict` para obter histórico + futuro.")
         except Exception as e:
             st.error(f"Falha ao rodar NeuralProphet: {e}")
+
