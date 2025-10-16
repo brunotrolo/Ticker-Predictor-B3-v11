@@ -8,6 +8,15 @@ import yfinance as yf
 import plotly.graph_objects as go
 import plotly.express as px
 from b3_utils import load_b3_tickers, ensure_sa_suffix, is_known_b3_ticker, search_b3
+import plotly.graph_objects as go
+
+# v11: dependência opcional (graceful fallback)
+try:
+    from neuralprophet import NeuralProphet
+    _NP_AVAILABLE = True
+except Exception:
+    _NP_AVAILABLE = False
+
 
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.ensemble import HistGradientBoostingClassifier
